@@ -22,9 +22,199 @@
 # Networks", CVPR'19 (https://arxiv.org/abs/1904.08755) if you use any part
 # of the code.
 import MinkowskiEngine as ME
+import torch
 from MinkowskiEngine.modules.resnet_block import BasicBlock, Bottleneck
-from models.resnet_mink import ResNetBase
 
+from models.mil_transformer import MilTransformer, adaGWP
+from models.resnet_mink import ResNetBase
+import torch.nn as nn
+
+# class MilTransformer(nn.Module):
+#     def __init__(self, num_features=64, num_classes=20):
+#         super(MilTransformer, self).__init__()
+#         # self.transformer = CustomTransformer(num_features, nhead=2,
+#         #                                      num_encoder_layers=2,
+#         #                                      num_decoder_layers=2,
+#         #                                      dim_feedforward=512)
+#         d_model = 256
+#         nhead = 2
+#         dim_feedforward = 256
+#         num_layers = 2
+#         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward)
+# #         encoder_norm = nn.LayerNorm(d_model)
+#         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)                                             
+#         # self.linear = nn.Conv1d(num_features, num_classes,
+#         #                         kernel_size=1, bias=False)
+
+
+#     def forward(self, sinput):
+#         # list_of_features = sinput.decomposed_features
+#         # list_of_coords, list_of_features = sinput.decomposed_coordinates_and_features      
+
+#         attn_feats = self.encoder(sinput.F.unsqueeze(1))
+#         # batch_feats = self.transformer.encoder(sinput.F.unsqueeze(1))
+#         # batch_coords = [sinput.C[x]   
+#         #                 for x in list_of_permutations if x.nelement() != 0]
+#         # attn_coords, attn_feats = ME.utils.sparse_collate(coords=list_of_coords,
+#         #                                                   feats=batch_feats)
+#         attn_sinput = ME.SparseTensor(features=attn_feats.squeeze(1),
+#                                     #   coordinates=torch.cat(batch_coords),
+#                                       coordinate_map_key=sinput.coordinate_map_key,
+#                                       coordinate_manager=sinput.coordinate_manager
+#                                       )
+#         return attn_sinput
+
+
+# class MinkUNetBase(ResNetBase):
+#     BLOCK = None
+#     PLANES = None
+#     DILATIONS = (1, 1, 1, 1, 1, 1, 1, 1)
+#     LAYERS = (2, 2, 2, 2, 2, 2, 2, 2)
+#     INIT_DIM = 32
+#     OUT_TENSOR_STRIDE = 1
+
+#     # To use the model, must call initialize_coords before forward pass.
+#     # Once data is processed, call clear to reset the model before calling
+#     # initialize_coords
+#     def __init__(self, in_channels, out_channels, D=3):
+#         ResNetBase.__init__(self, in_channels, out_channels, D)
+
+#         self.mil_trans = MilTransformer(num_features=self.PLANES[3])
+       
+
+#     def network_initialization(self, in_channels, out_channels, D):
+#         # Output of the first conv concated to conv6
+#         self.inplanes = self.INIT_DIM
+#         self.conv0p1s1 = ME.MinkowskiConvolution(
+#             in_channels, self.inplanes, kernel_size=5, dimension=D)
+
+#         self.bn0 = ME.MinkowskiBatchNorm(self.inplanes)
+
+#         self.conv1p1s2 = ME.MinkowskiConvolution(
+#             self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
+#         self.bn1 = ME.MinkowskiBatchNorm(self.inplanes)
+
+#         self.block1 = self._make_layer(self.BLOCK, self.PLANES[0],
+#                                        self.LAYERS[0])
+
+#         self.conv2p2s2 = ME.MinkowskiConvolution(
+#             self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
+#         self.bn2 = ME.MinkowskiBatchNorm(self.inplanes)
+
+#         self.block2 = self._make_layer(self.BLOCK, self.PLANES[1],
+#                                        self.LAYERS[1])
+
+#         self.conv3p4s2 = ME.MinkowskiConvolution(
+#             self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
+
+#         self.bn3 = ME.MinkowskiBatchNorm(self.inplanes)
+#         self.block3 = self._make_layer(self.BLOCK, self.PLANES[2],
+#                                        self.LAYERS[2])
+
+#         self.conv4p8s2 = ME.MinkowskiConvolution(
+#             self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
+#         self.bn4 = ME.MinkowskiBatchNorm(self.inplanes)
+#         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3],
+#                                        self.LAYERS[3])
+
+#         self.convtr4p16s2 = ME.MinkowskiConvolutionTranspose(
+#             self.inplanes, self.PLANES[4], kernel_size=2, stride=2, dimension=D)
+#         self.bntr4 = ME.MinkowskiBatchNorm(self.PLANES[4])
+
+#         self.inplanes = self.PLANES[4] + self.PLANES[2] * self.BLOCK.expansion
+#         self.block5 = self._make_layer(self.BLOCK, self.PLANES[4],
+#                                        self.LAYERS[4])
+#         self.convtr5p8s2 = ME.MinkowskiConvolutionTranspose(
+#             self.inplanes, self.PLANES[5], kernel_size=2, stride=2, dimension=D)
+#         self.bntr5 = ME.MinkowskiBatchNorm(self.PLANES[5])
+
+#         self.inplanes = self.PLANES[5] + self.PLANES[1] * self.BLOCK.expansion
+#         self.block6 = self._make_layer(self.BLOCK, self.PLANES[5],
+#                                        self.LAYERS[5])
+#         self.convtr6p4s2 = ME.MinkowskiConvolutionTranspose(
+#             self.inplanes, self.PLANES[6], kernel_size=2, stride=2, dimension=D)
+#         self.bntr6 = ME.MinkowskiBatchNorm(self.PLANES[6])
+
+#         self.inplanes = self.PLANES[6] + self.PLANES[0] * self.BLOCK.expansion
+#         self.block7 = self._make_layer(self.BLOCK, self.PLANES[6],
+#                                        self.LAYERS[6])
+#         self.convtr7p2s2 = ME.MinkowskiConvolutionTranspose(
+#             self.inplanes, self.PLANES[7], kernel_size=2, stride=2, dimension=D)
+#         self.bntr7 = ME.MinkowskiBatchNorm(self.PLANES[7])
+
+#         self.inplanes = self.PLANES[7] + self.INIT_DIM
+#         self.block8 = self._make_layer(self.BLOCK, self.PLANES[7],
+#                                        self.LAYERS[7])
+
+#         self.final = ME.MinkowskiConvolution(
+#             self.PLANES[7],
+#             out_channels,
+#             kernel_size=1,
+#             bias=True,
+#             dimension=D)
+#         self.relu = ME.MinkowskiReLU(inplace=True)
+
+#     def forward(self, x):
+#         out = self.conv0p1s1(x)
+#         out = self.bn0(out)
+#         out_p1 = self.relu(out)
+
+#         out = self.conv1p1s2(out_p1)
+#         out = self.bn1(out)
+#         out = self.relu(out)
+#         out_b1p2 = self.block1(out)
+
+#         out = self.conv2p2s2(out_b1p2)
+#         out = self.bn2(out)
+#         out = self.relu(out)
+#         out_b2p4 = self.block2(out)
+
+#         out = self.conv3p4s2(out_b2p4)
+#         out = self.bn3(out)
+#         out = self.relu(out)
+#         out_b3p8 = self.block3(out)
+
+#         # tensor_stride=16
+#         out = self.conv4p8s2(out_b3p8)
+#         out = self.bn4(out)
+#         out = self.relu(out)
+#         out = self.block4(out)
+
+#         out = self.mil_trans(out)
+        
+#         # tensor_stride=8
+#         out = self.convtr4p16s2(out)
+#         out = self.bntr4(out)
+#         out = self.relu(out)
+
+#         out = ME.cat(out, out_b3p8)
+#         out = self.block5(out)
+
+#         # tensor_stride=4
+#         out = self.convtr5p8s2(out)
+#         out = self.bntr5(out)
+#         out = self.relu(out)
+
+#         out = ME.cat(out, out_b2p4)
+#         out = self.block6(out)
+
+#         # tensor_stride=2
+#         out = self.convtr6p4s2(out)
+#         out = self.bntr6(out)
+#         out = self.relu(out)
+
+#         out = ME.cat(out, out_b1p2)
+#         out = self.block7(out)
+
+#         # tensor_stride=1
+#         out = self.convtr7p2s2(out)
+#         out = self.bntr7(out)
+#         out = self.relu(out)
+
+#         out = ME.cat(out, out_p1)
+#         out = self.block8(out)
+
+#         return self.final(out).F
 
 class MinkUNetBase(ResNetBase):
     BLOCK = None
@@ -39,6 +229,9 @@ class MinkUNetBase(ResNetBase):
     # initialize_coords
     def __init__(self, in_channels, out_channels, D=3):
         ResNetBase.__init__(self, in_channels, out_channels, D)
+
+        self.mil_trans = MilTransformer(num_features=self.PLANES[3])
+        # self.ada_gwp = adaGWP(num_features=out_channels)
 
     def network_initialization(self, in_channels, out_channels, D):
         # Output of the first conv concated to conv6
@@ -108,11 +301,12 @@ class MinkUNetBase(ResNetBase):
             self.PLANES[7],
             out_channels,
             kernel_size=1,
-            has_bias=True,
+            bias=True,
             dimension=D)
-        self.relu = ME.MinkowskiReLU(inplace=True)
+        self.relu = ME.MinkowskiReLU(inplace=False)
 
-    def forward(self, x):
+    def forward(self, x, cls_label=None):
+        # print('Input', x.shape)
         out = self.conv0p1s1(x)
         out = self.bn0(out)
         out_p1 = self.relu(out)
@@ -121,31 +315,38 @@ class MinkUNetBase(ResNetBase):
         out = self.bn1(out)
         out = self.relu(out)
         out_b1p2 = self.block1(out)
-
+        # print('b1', out_b1p2.shape)
         out = self.conv2p2s2(out_b1p2)
         out = self.bn2(out)
         out = self.relu(out)
         out_b2p4 = self.block2(out)
-
+        # print('b2', out_b2p4.shape)
         out = self.conv3p4s2(out_b2p4)
         out = self.bn3(out)
         out = self.relu(out)
         out_b3p8 = self.block3(out)
-
+        # print('b3', out_b3p8.shape)
         # tensor_stride=16
         out = self.conv4p8s2(out_b3p8)
         out = self.bn4(out)
         out = self.relu(out)
         out = self.block4(out)
+        # list_of_coords, list_of_feats = out.decomposed_coordinates_and_features
+        if cls_label is not None:
+            out, cls_loss, mil_loss = self.mil_trans(out, cls_label)
+        else:
+            cls_loss = mil_loss = None
+            out = self.mil_trans(out)
 
+        # print('b4', out.shape)
         # tensor_stride=8
         out = self.convtr4p16s2(out)
         out = self.bntr4(out)
         out = self.relu(out)
-
+        
         out = ME.cat(out, out_b3p8)
         out = self.block5(out)
-
+        # print('b5', out.shape)
         # tensor_stride=4
         out = self.convtr5p8s2(out)
         out = self.bntr5(out)
@@ -153,7 +354,7 @@ class MinkUNetBase(ResNetBase):
 
         out = ME.cat(out, out_b2p4)
         out = self.block6(out)
-
+        # print('b6', out.shape)
         # tensor_stride=2
         out = self.convtr6p4s2(out)
         out = self.bntr6(out)
@@ -169,9 +370,15 @@ class MinkUNetBase(ResNetBase):
 
         out = ME.cat(out, out_p1)
         out = self.block8(out)
+        # print('b8', out.shape)
+        # print('final out', self.final(out).shape)
 
-        return self.final(out).F
-
+        seg_feat = self.final(out)
+        # global_feat = [self.ada_gwp(x.unsqueeze(0).permute(0, 2, 1))
+        #                for x in seg_feat.decomposed_features]
+        # global_feat = torch.cat(global_feat)
+        
+        return seg_feat.F, cls_loss, mil_loss
 
 class MinkUNet14(MinkUNetBase):
     BLOCK = BasicBlock

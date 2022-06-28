@@ -1,24 +1,25 @@
+import argparse
+import logging
 import os
 import random
-import numpy as np
-import logging
-import argparse
+from os.path import join
+from pathlib import Path
 
 import cv2
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
-import torch.multiprocessing as mp
-import torch.distributed as dist
-from os.path import join
 from metrics import iou
-
-from MinkowskiEngine import SparseTensor, CoordsManager
+from MinkowskiEngine import CoordsManager, SparseTensor
+from tqdm import tqdm
 from util import config
 from util.util import AverageMeter, intersectionAndUnionGPU
-from tqdm import tqdm
+
 from tool.train import get_model
 
 cv2.ocl.setUseOpenCL(False)
@@ -93,14 +94,10 @@ def main():
         args.use_apex = False
 
     # Following code is for caching dataset into memory
-    if args.data_name == 'scannet_3d_mink':
-        from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
-        _ = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
-                      memCacheInit=True, eval_all=True, identifier=6797)
-    elif args.data_name == 'scannet_cross':
-        from dataset.scanNetCross import ScanNetCross, collation_fn, collation_fn_eval_all
-        _ = ScanNetCross(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
-                         memCacheInit=True, eval_all=True, identifier=6797, val_benchmark=args.val_benchmark)
+
+    from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
+    _ = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
+                    memCacheInit=True, eval_all=True, identifier=6797)
 
     if args.multiprocessing_distributed:
         args.world_size = args.ngpus_per_node * args.world_size
@@ -148,45 +145,69 @@ def main_worker(gpu, ngpus_per_node, argss):
         raise RuntimeError("=> no checkpoint found at '{}'".format(args.model_path))
 
     # ####################### Data Loader ####################### #
-    if args.data_name == 'scannet_3d_mink':
-        from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
-        val_data = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
-                             memCacheInit=True, eval_all=True, identifier=6797)
-        val_sampler = None
-        val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_batch_size,
-                                                 shuffle=False, num_workers=args.test_workers, pin_memory=True,
-                                                 drop_last=False, collate_fn=collation_fn_eval_all,
-                                                 sampler=val_sampler)
-    elif args.data_name == 'scannet_cross':
-        from dataset.scanNetCross import ScanNetCross, collation_fn_eval_all
-        val_data = ScanNetCross(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
-                                memCacheInit=True, eval_all=True, identifier=6797, val_benchmark=args.val_benchmark)
-        val_sampler = None
-        val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_batch_size,
-                                                 shuffle=False, num_workers=args.test_workers, pin_memory=True,
-                                                 drop_last=False, collate_fn=collation_fn_eval_all,
-                                                 sampler=val_sampler)
-    else:
-        raise Exception('Dataset not supported yet'.format(args.data_name))
+
+    from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
+    val_data = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
+                            memCacheInit=True, eval_all=True, identifier=6797)
+    val_sampler = None
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_batch_size,
+                                                shuffle=False, num_workers=args.test_workers, pin_memory=True,
+                                                drop_last=False, collate_fn=collation_fn_eval_all,
+                                                sampler=val_sampler)
 
     # ####################### Test ####################### #
     if args.data_name == 'scannet_3d_mink':
         validate(model, val_loader)
+#         test(model, val_loader)
     elif args.data_name == 'scannet_cross':
         test_cross_3d(model, val_loader)
 
+def test(model, val_loader):
+    torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
+    model.eval()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    index_mapping = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39])
+    with torch.no_grad():
+        store = 0.0
+        preds = []
+        gts = []
+        data_paths = [Path(x).stem for x in sorted(val_loader.dataset.data_paths)]
+        data_file = [x.replace('_vh_clean_2', '') for x in data_paths]
+        print(data_file)
+        for i, (coords, feat, label, inds_reverse) in enumerate(tqdm(val_loader)):
+            store = 0.0
+            print(data_file[i], coords.shape)
+            for rep_i in range(7):            
+                sinput = SparseTensor(feat, coordinates=coords, device=device)
+                predictions, _, _ = model(sinput)
+                predictions_enlarge = predictions[inds_reverse, :]
+                if args.multiprocessing_distributed:
+                    dist.all_reduce(predictions_enlarge)
+                pred = predictions_enlarge.detach_().cpu()
+                store = pred + store
 
+            accumu_pred = store.max(1)[1].numpy()
+            pred40 = index_mapping[accumu_pred]
+
+            if main_process():
+                np.savetxt(join(args.save_folder, f'{data_file[i]}.txt'), pred40, fmt='%d')
+        
+        
+        
 def validate(model, val_loader):
     torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
     model.eval()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     with torch.no_grad():
         store = 0.0
         for rep_i in range(args.test_repeats):
             preds = []
             gts = []
+            
             for i, (coords, feat, label, inds_reverse) in enumerate(tqdm(val_loader)):
-                sinput = SparseTensor(feat.cuda(non_blocking=True), coords)
-                predictions = model(sinput)
+                sinput = SparseTensor(feat, coordinates=coords, device=device)
+                predictions, _, _ = model(sinput)
                 predictions_enlarge = predictions[inds_reverse, :]
                 if args.multiprocessing_distributed:
                     dist.all_reduce(predictions_enlarge)
@@ -199,6 +220,7 @@ def validate(model, val_loader):
                 np.save(join(args.save_folder, 'gt.npy'), gt.numpy())
             store = pred + store
             accumu_iou = iou.evaluate(store.max(1)[1].numpy(), gt.numpy())
+            print('IoU:', accumu_iou)
             if main_process():
                 np.save(join(args.save_folder, 'pred.npy'), store.max(1)[1].numpy())
 
